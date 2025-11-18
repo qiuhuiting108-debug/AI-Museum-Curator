@@ -1,3 +1,7 @@
+# app.py
+# AI Museum Curator — Final Project (Stable Version with Error Handling)
+# Fully matches the lecture UI layout.
+
 import streamlit as st
 import requests
 from openai import OpenAI
@@ -12,9 +16,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# -----------------------------
 # Title
-# -----------------------------
 st.markdown(
     """
 # 🎨 AI Museum Curator  
@@ -23,11 +25,10 @@ Explore artworks from The Metropolitan Museum of Art with AI-generated professio
 )
 
 # -----------------------------
-# Sidebar
+# Sidebar UI
 # -----------------------------
 st.sidebar.header("Settings")
 
-# Department dropdown (like screenshot)
 departments = {
     "American Decorative Arts": 1,
     "Ancient Near Eastern Art": 3,
@@ -43,8 +44,9 @@ departments = {
 selected_dept = st.sidebar.selectbox("Department", list(departments.keys()))
 
 if st.sidebar.button("Load New Artworks"):
-    st.session_state["trigger"] = True
+    st.session_state["load_art"] = True
 
+# About text
 st.sidebar.markdown("---")
 st.sidebar.header("About")
 st.sidebar.write(
@@ -59,26 +61,44 @@ st.sidebar.markdown(
 )
 
 # -----------------------------
-# Helper Functions
+# MET API Helpers
 # -----------------------------
 MET_BASE = "https://collectionapi.metmuseum.org/public/collection/v1"
 
 
+def safe_json(response):
+    """Safely parse JSON. Return {} if invalid."""
+    try:
+        return response.json()
+    except:
+        return {}
+
+
 def get_object_ids_from_department(dept_id):
+    """Fetch object IDs from a department, with full error handling."""
     url = f"{MET_BASE}/search"
     params = {"departmentId": dept_id, "hasImages": "true", "q": ""}
+
     r = requests.get(url)
-    data = r.json()
-    return data.get("objectIDs", [])
+    data = safe_json(r)
+
+    object_ids = data.get("objectIDs") or []
+    if not object_ids:
+        return []
+    return object_ids
 
 
 def get_artwork(object_id):
+    """Fetch artwork metadata, safe from API failures."""
     url = f"{MET_BASE}/objects/{object_id}"
     r = requests.get(url)
-    return r.json()
+    return safe_json(r)
 
 
-def generate_curator_text(api_key, model, artwork):
+# -----------------------------
+# AI Curator Function
+# -----------------------------
+def generate_curator_text(api_key, artwork):
     client = OpenAI(api_key=api_key)
 
     prompt = f"""
@@ -95,7 +115,7 @@ Department: {artwork.get('department')}
 """
 
     response = client.chat.completions.create(
-        model=model,
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a professional museum curator."},
             {"role": "user", "content": prompt},
@@ -106,38 +126,42 @@ Department: {artwork.get('department')}
 
 
 # -----------------------------
-# Main Display Logic
+# Main App Logic
 # -----------------------------
-if "trigger" not in st.session_state:
-    st.info("← Choose a department and click **Load New Artworks**.")
+if "load_art" not in st.session_state:
+    st.info("← Choose a department and click **Load New Artworks** to begin.")
 else:
     dept_id = departments[selected_dept]
 
-    # 1. Get object IDs
-    with st.spinner("Fetching artworks..."):
+    # 1. Fetch Object IDs
+    with st.spinner("Fetching artworks from the MET Museum..."):
         object_ids = get_object_ids_from_department(dept_id)
 
     if not object_ids:
-        st.error("No artworks found.")
+        st.error("⚠️ This department has no available artworks. Try another one.")
     else:
-        # pick a random artwork like screenshot
+        # pick random valid artwork
         object_id = random.choice(object_ids)
 
         with st.spinner("Loading artwork details..."):
             artwork = get_artwork(object_id)
 
-        # layout: big image left, info right
+        # Validate artwork image
+        img = artwork.get("primaryImage") or artwork.get("primaryImageSmall")
+        if not img:
+            st.warning("This artwork has no image. Try loading again.")
+            st.stop()
+
+        # -----------------------------
+        # UI Layout — Image (Left) / Info + AI (Right)
+        # -----------------------------
         col1, col2 = st.columns([1.3, 1])
 
-        # display image
+        # Image
         with col1:
-            img = artwork.get("primaryImage") or artwork.get("primaryImageSmall")
-            if img:
-                st.image(img, use_container_width=True)
-            else:
-                st.warning("No image available.")
+            st.image(img, use_container_width=True)
 
-        # artwork info (title, artist, date, etc.)
+        # Artwork Info
         with col2:
             st.markdown(f"## {artwork.get('title', 'Untitled')}")
             st.markdown(f"**Artist:** {artwork.get('artistDisplayName', 'Unknown')}")
@@ -148,16 +172,15 @@ else:
             st.markdown("---")
             st.markdown("## Curator's Interpretation")
 
-            # ask for API key when needed
             openai_key = st.text_input("OpenAI API Key", type="password")
-            model = "gpt-4o-mini"
 
             if st.button("Generate Explanation"):
                 if not openai_key:
                     st.error("Please enter your OpenAI API key.")
                 else:
                     with st.spinner("AI Curator is writing..."):
-                        interpretation = generate_curator_text(
-                            openai_key, model, artwork
-                        )
-                        st.write(interpretation)
+                        try:
+                            result = generate_curator_text(openai_key, artwork)
+                            st.write(result)
+                        except Exception as e:
+                            st.error("AI generation failed. Please check your API key or try again later.")
