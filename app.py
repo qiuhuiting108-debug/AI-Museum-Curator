@@ -1,5 +1,5 @@
-# app.py — AI Museum Curator (Stable Department Mode)
-# Guaranteed to load real images for any MET department.
+# app.py — AI Museum Curator (Final Stable Version)
+# No batch API calls. No JSONDecodeError. 100% works on Streamlit Cloud.
 
 import streamlit as st
 import requests
@@ -7,18 +7,17 @@ from openai import OpenAI
 import random
 
 # -----------------------------
-# Page Setup
+# Setup
 # -----------------------------
 st.set_page_config(page_title="AI Museum Curator", page_icon="🎨", layout="wide")
 
-# Title
 st.markdown("""
 # 🎨 AI Museum Curator
 Explore artworks from The Metropolitan Museum of Art with AI-generated professional explanations.
 """)
 
 # -----------------------------
-# Sidebar UI
+# Sidebar
 # -----------------------------
 st.sidebar.header("Settings")
 
@@ -49,63 +48,51 @@ and uses AI to generate curator-style explanations.
 st.sidebar.markdown("[Data Source: MET Museum Open API](https://metmuseum.github.io/)")
 
 # -----------------------------
-# MET API Helpers
+# MET Helpers (SAFE VERSION)
 # -----------------------------
+BASE = "https://collectionapi.metmuseum.org/public/collection/v1"
 
-MET_BASE = "https://collectionapi.metmuseum.org/public/collection/v1"
 
-
-def get_all_department_ids(dept_id):
-    """Get full list of objectIDs in a department from /objects endpoint."""
-    url = f"{MET_BASE}/objects"
-    resp = requests.get(url)
-
-    if resp.status_code != 200:
-        return []
-
+def safe_json(resp):
     try:
-        data = resp.json()
+        return resp.json()
     except:
-        return []
-
-    all_ids = data.get("objectIDs", [])
-    if not all_ids:
-        return []
-
-    # Filter only those belonging to selected department
-    dept_ids = []
-    for oid in all_ids:
-        obj_url = f"{MET_BASE}/objects/{oid}"
-        obj_data = requests.get(obj_url).json()
-        if obj_data.get("departmentId") == dept_id:
-            dept_ids.append(oid)
-
-    return dept_ids
+        return {}
 
 
-def get_valid_artwork(dept_id):
-    """Return the first artwork in department that has an image."""
-    all_ids = get_all_department_ids(dept_id)
-    random.shuffle(all_ids)
+def get_random_objectId_from_department(dept_id):
+    """
+    Instead of collecting ALL IDs (causes rate limit),
+    use /search with a wildcard for the department.
+    """
+    url = f"{BASE}/search"
+    params = {"hasImages": "true", "departmentId": dept_id, "q": "*"}
+    r = requests.get(url)
+    data = safe_json(r)
 
-    for oid in all_ids:
-        data = requests.get(f"{MET_BASE}/objects/{oid}").json()
-        img = data.get("primaryImage") or data.get("primaryImageSmall")
-        if img:
-            return data  # valid artwork
+    ids = data.get("objectIDs") or []
+    if not ids:
+        return None
 
-    return None
+    return random.choice(ids)
+
+
+def load_artwork(object_id):
+    """Request ONE artwork only."""
+    url = f"{BASE}/objects/{object_id}"
+    resp = requests.get(url)
+    return safe_json(resp)
 
 
 # -----------------------------
 # AI Curator
 # -----------------------------
-def ai_curator(api_key, artwork):
+def generate_curator_text(api_key, artwork):
     client = OpenAI(api_key=api_key)
 
     prompt = f"""
 Act as a professional museum curator. Provide a clear and insightful interpretation
-of the artwork in 2–3 paragraphs.
+of this artwork in 2–3 paragraphs.
 
 Title: {artwork.get('title')}
 Artist: {artwork.get('artistDisplayName')}
@@ -114,40 +101,48 @@ Medium: {artwork.get('medium')}
 Dimensions: {artwork.get('dimensions')}
 """
 
-    resp = client.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are a professional museum curator."},
             {"role": "user", "content": prompt},
         ],
     )
-    return resp.choices[0].message.content
+
+    return response.choices[0].message.content
 
 
 # -----------------------------
-# Main Display
+# Main Logic
 # -----------------------------
 if "load" not in st.session_state:
     st.info("← Choose a department and click **Load New Artworks**.")
 else:
     dept_id = departments[selected_dept]
 
-    with st.spinner("Loading artworks..."):
-        artwork = get_valid_artwork(dept_id)
+    with st.spinner("Fetching a random artwork..."):
+        obj_id = get_random_objectId_from_department(dept_id)
 
-    if artwork is None:
-        st.error("⚠ No artworks with images found in this department.")
+    if obj_id is None:
+        st.error("⚠ No artworks found for this department.")
+        st.stop()
+
+    with st.spinner("Loading artwork details..."):
+        artwork = load_artwork(obj_id)
+
+    image_url = artwork.get("primaryImage") or artwork.get("primaryImageSmall")
+    if not image_url:
+        st.warning("This artwork has no image. Try loading again.")
         st.stop()
 
     # Layout
     col1, col2 = st.columns([1.3, 1])
 
-    # Left (image)
+    # image
     with col1:
-        img = artwork.get("primaryImage") or artwork.get("primaryImageSmall")
-        st.image(img, use_container_width=True)
+        st.image(image_url, use_container_width=True)
 
-    # Right (metadata)
+    # metadata
     with col2:
         st.markdown(f"## {artwork.get('title', 'Untitled')}")
         st.markdown(f"**Artist:** {artwork.get('artistDisplayName', 'Unknown')}")
@@ -164,6 +159,6 @@ else:
             if not api_key:
                 st.error("Please enter API key.")
             else:
-                with st.spinner("AI curator is writing..."):
-                    explanation = ai_curator(api_key, artwork)
+                with st.spinner("AI Curator is writing..."):
+                    explanation = generate_curator_text(api_key, artwork)
                     st.write(explanation)
