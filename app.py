@@ -1,6 +1,3 @@
-# app.py
-# AI Museum Curator — Final Project (UI version similar to lecture screenshot)
-
 import streamlit as st
 import requests
 from openai import OpenAI
